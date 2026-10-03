@@ -1,0 +1,59 @@
+# Step 5 of 5 — receivers -> processors -> exporters, wired by service.pipelines. See LEARN.md §7.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # 1s instead of the usual 10s so a click shows up in Jaeger almost instantly.
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: workshop
+        action: upsert
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Prints every span as text: `make logs-collector`.
+  debug:
+    verbosity: detailed
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/jaeger, debug]
+
+    # No Prometheus in this stack, so metrics only reach the debug log.
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]
+
+  telemetry:
+    logs:
+      level: info

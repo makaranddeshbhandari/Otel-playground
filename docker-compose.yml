@@ -1,0 +1,116 @@
+# The whole stack: gui -> orders-api -> payments-api -> collector -> jaeger. Start it with `make up`.
+
+# Shared OpenTelemetry config. Almost all OTel setup is these env vars.
+x-otel-env: &otel-env
+  # The collector, not Jaeger — apps never know which backend you use.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  # The ${VAR:-default} form is what makes overrides in a .env file actually work.
+  OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}"
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=workshop,service.namespace=otel-playground,service.version=1.0.0
+  OTEL_TRACES_SAMPLER: parentbased_traceidratio
+  # 1.0 = keep every trace. Try 0.1 and watch most clicks vanish from Jaeger.
+  OTEL_TRACES_SAMPLER_ARG: "${OTEL_TRACES_SAMPLER_ARG:-1.0}"
+  # Flush spans after 500ms instead of the 5000ms default, so clicks feel instant.
+  OTEL_BSP_SCHEDULE_DELAY: "500"
+  # Same idea for metrics: 5s instead of the 60s default.
+  OTEL_METRIC_EXPORT_INTERVAL: "5000"
+  # Keeps the every-10s docker healthcheck out of Jaeger.
+  OTEL_PYTHON_EXCLUDED_URLS: "health,healthz"
+  OTEL_LOGS_EXPORTER: none
+
+services:
+  # Trace backend + UI. Storage is in-memory: restart it and traces are gone.
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.11.0
+    container_name: otel-jaeger
+    ports:
+      - "16686:16686"
+    networks: [otel]
+    restart: unless-stopped
+
+  # Config lives in ./collector/config.yaml
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+      - "13133:13133"   # health check
+    depends_on:
+      - jaeger
+    networks: [otel]
+    restart: unless-stopped
+
+  # Auto-instrumented AND manually instrumented. Reading order: step 4 of 5.
+  payments-api:
+    build: ./services/payments
+    container_name: otel-payments-api
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: payments-api
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./services/payments:/app
+    depends_on:
+      - otel-collector
+    networks: [otel]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  # Zero OpenTelemetry code in its source. Reading order: step 3 of 5.
+  orders-api:
+    build: ./services/orders
+    container_name: otel-orders-api
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: orders-api
+      PAYMENTS_URL: http://payments-api:8002
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./services/orders:/app
+    depends_on:
+      payments-api:
+        condition: service_healthy
+    networks: [otel]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  # The Streamlit control panel you click. Reading order: steps 1 and 2 of 5.
+  gui:
+    build: ./gui
+    container_name: otel-gui
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: gui
+      ORDERS_URL: http://orders-api:8001
+      JAEGER_QUERY_URL: http://jaeger:16686   # server-side, container network
+      JAEGER_UI_URL: http://localhost:16686   # links you click in the browser
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./gui:/app
+      - ./scripts:/scripts:ro
+    depends_on:
+      orders-api:
+        condition: service_healthy
+    networks: [otel]
+    restart: unless-stopped
+
+networks:
+  otel:
+    name: otel-playground

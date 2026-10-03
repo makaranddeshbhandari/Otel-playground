@@ -1,0 +1,7 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+pydantic==2.13.4
+requests==2.34.2
+
+# main.py imports none of this — it's here purely for opentelemetry-instrument.
+opentelemetry-distro[otlp]==0.65b0

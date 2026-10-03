@@ -1,0 +1,8 @@
+streamlit==1.61.1
+requests==2.34.2
+
+# Installed explicitly because otel_setup.py wires the SDK by hand.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+opentelemetry-instrumentation-requests==0.65b0
